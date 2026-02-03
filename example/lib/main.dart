@@ -45,7 +45,7 @@ class MyHomePage extends StatefulWidget {
 }
 
 class _MyHomePageState extends State<MyHomePage> {
-  final http.Client _client = createMonitorClient(inner: http.Client());
+  final http.Client _client = createMonitorClient();
   final Uri _baseUrl = Uri.parse('https://dummyjson.com');
   Timer? _periodicTimer;
   bool _isPeriodicRunning = false;

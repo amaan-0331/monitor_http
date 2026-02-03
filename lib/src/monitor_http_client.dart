@@ -18,39 +18,40 @@ class MonitorHttpClient extends http.BaseClient {
 
   @override
   Future<http.StreamedResponse> send(http.BaseRequest request) async {
-    final captured = await _captureRequest(request);
+    final config = Monitor.config;
+    final logRequestBody = config.logRequestBody;
+
+    Uint8List? requestBodyBytes;
+    String? requestBody;
+    int? requestSize;
+
+    if (request is http.Request) {
+      if (logRequestBody) {
+        final bytes = Uint8List.fromList(request.bodyBytes);
+        requestSize = bytes.length;
+        if (bytes.isNotEmpty) {
+          requestBodyBytes = bytes;
+          requestBody = _maybeDecodeBody(bytes, request.headers);
+        }
+      } else {
+        requestSize = request.contentLength;
+      }
+    } else if (request.contentLength != null && request.contentLength! >= 0) {
+      requestSize = request.contentLength;
+    }
+
     final id = Monitor.startRequest(
-      method: captured.request.method,
-      uri: captured.request.url,
-      headers: captured.request.headers,
-      body: _maybeDecodeBody(captured.bodyBytes, captured.request.headers),
-      bodyBytes: captured.bodyBytes.length,
-      bodyRawBytes: captured.bodyBytes,
+      method: request.method,
+      uri: request.url,
+      headers: request.headers,
+      body: requestBody,
+      bodyBytes: requestSize,
+      bodyRawBytes: requestBodyBytes,
     );
 
     try {
-      final response = await _inner.send(captured.request);
-      final responseBytes = await response.stream.toBytes();
-      final responseBody = _maybeDecodeBody(responseBytes, response.headers);
-
-      Monitor.completeRequest(
-        id: id,
-        statusCode: response.statusCode,
-        responseHeaders: response.headers,
-        responseBody: responseBody,
-        responseSize: responseBytes.length,
-      );
-
-      return http.StreamedResponse(
-        http.ByteStream.fromBytes(responseBytes),
-        response.statusCode,
-        headers: response.headers,
-        reasonPhrase: response.reasonPhrase,
-        contentLength: responseBytes.length,
-        isRedirect: response.isRedirect,
-        persistentConnection: response.persistentConnection,
-        request: response.request,
-      );
+      final response = await _inner.send(request);
+      return _wrapResponse(response, id);
     } catch (error) {
       Monitor.failRequest(
         id: id,
@@ -67,35 +68,114 @@ class MonitorHttpClient extends http.BaseClient {
   }
 }
 
-class _CapturedRequest {
-  _CapturedRequest({required this.request, required this.bodyBytes});
+http.StreamedResponse _wrapResponse(
+  http.StreamedResponse response,
+  String requestId,
+) {
+  final captureBody = Monitor.config.logResponseBody;
+  final accumulator = _ResponseAccumulator(captureBody: captureBody);
+  var completed = false;
 
-  final http.StreamedRequest request;
-  final Uint8List bodyBytes;
+  void completeSuccess() {
+    if (completed) return;
+    completed = true;
+    final responseBytes = accumulator.takeBytes();
+    final responseBody = captureBody
+        ? _maybeDecodeBody(responseBytes, response.headers)
+        : null;
+
+    Monitor.completeRequest(
+      id: requestId,
+      statusCode: response.statusCode,
+      responseHeaders: response.headers,
+      responseBody: responseBody,
+      responseSize: accumulator.size,
+    );
+  }
+
+  void completeError(Object error) {
+    if (completed) return;
+    completed = true;
+    Monitor.failRequest(
+      id: requestId,
+      errorMessage: error.toString(),
+      isTimeout: error is TimeoutException,
+    );
+  }
+
+  final tappedStream = _tapStream(
+    response.stream,
+    onData: accumulator.add,
+    onError: (error, _) => completeError(error),
+    onDone: completeSuccess,
+  );
+
+  return http.StreamedResponse(
+    http.ByteStream(tappedStream),
+    response.statusCode,
+    headers: response.headers,
+    reasonPhrase: response.reasonPhrase,
+    contentLength: response.contentLength,
+    isRedirect: response.isRedirect,
+    persistentConnection: response.persistentConnection,
+    request: response.request,
+  );
 }
 
-Future<_CapturedRequest> _captureRequest(http.BaseRequest request) async {
-  final stream = request.finalize();
-  final bodyBytes = await stream.toBytes();
+class _ResponseAccumulator {
+  _ResponseAccumulator({required this.captureBody})
+    : _builder = captureBody ? BytesBuilder(copy: false) : null;
 
-  final streamed = http.StreamedRequest(request.method, request.url)
-    ..followRedirects = request.followRedirects
-    ..maxRedirects = request.maxRedirects
-    ..persistentConnection = request.persistentConnection
-    ..headers.addAll(request.headers);
+  final bool captureBody;
+  final BytesBuilder? _builder;
+  var _size = 0;
 
-  if (request.contentLength != null && request.contentLength! >= 0) {
-    streamed.contentLength = request.contentLength;
-  } else if (bodyBytes.isNotEmpty) {
-    streamed.contentLength = bodyBytes.length;
+  void add(List<int> chunk) {
+    _size += chunk.length;
+    _builder?.add(chunk);
   }
 
-  if (bodyBytes.isNotEmpty) {
-    streamed.sink.add(bodyBytes);
-  }
-  await streamed.sink.close();
+  int get size => _size;
 
-  return _CapturedRequest(request: streamed, bodyBytes: bodyBytes);
+  Uint8List takeBytes() {
+    if (_builder == null) return Uint8List(0);
+    return _builder.takeBytes();
+  }
+}
+
+Stream<List<int>> _tapStream(
+  Stream<List<int>> source, {
+  required void Function(List<int>) onData,
+  required void Function(Object, StackTrace) onError,
+  required void Function() onDone,
+}) {
+  late StreamSubscription<List<int>> subscription;
+  late final StreamController<List<int>> controller;
+  controller = StreamController<List<int>>(
+    sync: true,
+    onListen: () {
+      subscription = source.listen(
+        (data) {
+          onData(data);
+          controller.add(data);
+        },
+        onError: (Object error, StackTrace stackTrace) {
+          onError(error, stackTrace);
+          controller.addError(error, stackTrace);
+        },
+        onDone: () {
+          onDone();
+          controller.close();
+        },
+        cancelOnError: false,
+      );
+    },
+    onPause: () => subscription.pause(),
+    onResume: () => subscription.resume(),
+    onCancel: () => subscription.cancel(),
+  );
+
+  return controller.stream;
 }
 
 String? _maybeDecodeBody(Uint8List bytes, Map<String, String> headers) {
