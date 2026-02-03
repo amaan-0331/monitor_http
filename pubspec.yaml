@@ -1,0 +1,19 @@
+name: monitor_http
+description: "HTTP client helpers for Monitor with tracking enabled by default."
+version: 0.1.0
+repository: https://github.com/amaan-0331/monitor
+
+environment:
+  sdk: ^3.10.4
+  flutter: ">=1.17.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  http: ^1.6.0
+  monitor: ^1.1.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  very_good_analysis: ^10.0.0

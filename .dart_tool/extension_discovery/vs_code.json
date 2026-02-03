@@ -1,0 +1,6 @@
+{
+  "version": 2,
+  "entries": [
+    { "package": "monitor_http", "rootUri": "../", "packageUri": "lib/" }
+  ]
+}
