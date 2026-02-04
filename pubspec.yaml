@@ -1,6 +1,6 @@
 name: monitor_http
 description: "HTTP client helpers for Monitor with tracking enabled by default."
-version: 1.0.0
+version: 1.1.0
 repository: https://github.com/amaan-0331/monitor_http
 
 environment:

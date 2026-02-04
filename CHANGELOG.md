@@ -1,3 +1,8 @@
+## 1.1.0
+
+- Fix issues with multipart request body handling
+- Update monitor:1.3.0
+
 ## 1.0.0
 
 - Initial Pub Release
