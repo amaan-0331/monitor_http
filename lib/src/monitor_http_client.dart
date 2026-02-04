@@ -24,8 +24,28 @@ class MonitorHttpClient extends http.BaseClient {
     Uint8List? requestBodyBytes;
     String? requestBody;
     int? requestSize;
+    var requestToSend = request;
 
-    if (request is http.Request) {
+    if (request is http.MultipartRequest) {
+      // For MultipartRequest, we need to finalize to capture the body
+      if (logRequestBody) {
+        final byteStream = request.finalize();
+        final bodyBytes = await byteStream.toBytes();
+        requestSize = bodyBytes.length;
+        if (bodyBytes.isNotEmpty) {
+          requestBodyBytes = bodyBytes;
+          requestBody = _maybeDecodeBody(bodyBytes, request.headers);
+        }
+
+        // Create a new Request with the captured bytes since we consumed the stream
+        final newRequest = http.Request(request.method, request.url);
+        newRequest.headers.addAll(request.headers);
+        newRequest.bodyBytes = bodyBytes;
+        requestToSend = newRequest;
+      } else {
+        requestSize = request.contentLength;
+      }
+    } else if (request is http.Request) {
       if (logRequestBody) {
         final bytes = Uint8List.fromList(request.bodyBytes);
         requestSize = bytes.length;
@@ -50,7 +70,7 @@ class MonitorHttpClient extends http.BaseClient {
     );
 
     try {
-      final response = await _inner.send(request);
+      final response = await _inner.send(requestToSend);
       return _wrapResponse(response, id);
     } catch (error) {
       Monitor.failRequest(
